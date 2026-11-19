@@ -1,6 +1,7 @@
 /*!
- * just-language-translation.js v1.0.0
+ * just-language-translation.js v1.1.2
  * Language only: Google Translate driven by ?ln=, with the language carried across funnel steps.
+ * Also rewrites legacy per-language links (/fr, /ru) to the current page plus ?ln=.
  * No theme code, no video swap. Hosted remotely so one update ships to every sub-account.
  *
  * LOAD IT IN THE FUNNEL-LEVEL HEAD TRACKING CODE (applies to every step):
@@ -52,7 +53,7 @@
   var STORE_KEY = 'ol_lang';
   var ALLOWED = [
     'es', 'de', 'fr', 'it', 'pt', 'nl', 'da', 'fi', 'el',
-    'hu', 'bg', 'cs', 'sk', 'ro', 'hi', 'zh-CN', 'ja', 'ko', 'ar', 'pl'
+    'hu', 'bg', 'cs', 'sk', 'ro', 'hi', 'zh-CN', 'ja', 'ko', 'ar', 'pl', 'ru'
   ];
 
   // Case-insensitive match so ?ln=zh-cn or ?ln=HI still resolve to the exact Google code
@@ -97,6 +98,18 @@
     } catch (e) {
       console.warn('[OL Lang] could not restore ln param:', e);
     }
+  }
+
+  // Unknown ln value (typo, junk, or an unsupported language): rewrite it to ln=en.
+  // The form's hidden field reads this URL parameter, so without this a visitor could
+  // store arbitrary text in the contact's language field. Valid English ('en') is left alone.
+  if (raw !== null && !lang && String(raw).trim().toLowerCase() !== 'en') {
+    try {
+      var cleanUrl = new URL(window.location.href);
+      cleanUrl.searchParams.set('ln', 'en');
+      history.replaceState(history.state, '', cleanUrl.pathname + cleanUrl.search + cleanUrl.hash);
+      log('unknown ln "' + raw + '" rewritten to en');
+    } catch (e) {}
   }
 
   // Cookies: clear every googtrans variant, then set the active one
@@ -204,4 +217,44 @@
   } else {
     window.addEventListener('load', function () { setTimeout(boot, 200); });
   }
+})();
+
+/* =========================================================
+   3. LEGACY LANGUAGE LINKS: /fr, /ru ... -> current page + ?ln=
+   The old setup had one funnel per language, so existing switchers link to /fr, /ru, etc.
+   With one funnel those paths no longer exist. This turns such a click into
+   "same page, same params, only ln replaced". It sits outside the language block on purpose,
+   because that block returns early for English visitors and the links must work for them too.
+   ========================================================= */
+(function () {
+  if (window.__olLegacyLinks) return;
+  window.__olLegacyLinks = true;
+
+  // A bare language path: /fr, /ru, /zh-CN, optional trailing slash. Nothing deeper (so /fr/thanks is left alone)
+  var LANG_PATH = /^\/([a-z]{2}(?:-[a-z]{2})?)\/?$/i;
+
+  // Capture phase, so this runs before GHL's own link handling can navigate away
+  document.addEventListener('click', function (e) {
+    var a = e.target && e.target.closest ? e.target.closest('a[href]') : null;
+    if (!a) return;
+
+    var link;
+    try { link = new URL(a.getAttribute('href'), window.location.href); } catch (err) { return; }
+
+    // Only same-site links; a link to another domain is never ours to rewrite
+    if (link.origin !== window.location.origin) return;
+
+    var m = LANG_PATH.exec(link.pathname);
+    // Skip links that already point at the current page (for example the new ?ln= switcher)
+    if (!m || link.pathname === window.location.pathname) return;
+
+    e.preventDefault();
+    e.stopPropagation();
+
+    // Base URL stays the same: current path and params, only ln replaced
+    var next = new URL(window.location.href);
+    next.searchParams.set('ln', m[1]);
+    next.hash = ''; // a hash-only difference would not reload the page
+    window.location.assign(next.pathname + next.search);
+  }, true);
 })();
