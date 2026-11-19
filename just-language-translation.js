@@ -1,11 +1,18 @@
 /*!
- * just-language-translation.js v1.1.2
+ * just-language-translation.js v1.2.0
  * Language only: Google Translate driven by ?ln=, with the language carried across funnel steps.
- * Also rewrites legacy per-language links (/fr, /ru) to the current page plus ?ln=.
+ * Supports a per-account default language and rewrites legacy per-language links (/fr, /ru).
  * No theme code, no video swap. Hosted remotely so one update ships to every sub-account.
  *
- * LOAD IT IN THE FUNNEL-LEVEL HEAD TRACKING CODE (applies to every step):
+ * LOAD IT IN THE FUNNEL-LEVEL HEAD TRACKING CODE (applies to every step), config line first:
+ *   <script>window.TFA_CONFIG = { defaultLang: '{{custom_values.default_language_code}}' };</script>
  *   <script src="https://cdn.jsdelivr.net/gh/Saith-Ahmad/tfa-funnel@COMMIT_OR_TAG/just-language-translation.js" defer></script>
+ *
+ * Language order of precedence:
+ *   1. ?ln= in the URL (a supported code, or en for English)
+ *   2. the visitor's earlier choice in this session (sessionStorage, including an explicit English)
+ *   3. the account default (custom value default_language_code)
+ *   4. English
  *
  * Why defer is safe: this file only sets the googtrans cookie and registers the init callback.
  * Google's element.js is injected after window load, so the cookie always exists before Google reads it.
@@ -56,7 +63,8 @@
     'hu', 'bg', 'cs', 'sk', 'ro', 'hi', 'zh-CN', 'ja', 'ko', 'ar', 'pl', 'ru'
   ];
 
-  // Case-insensitive match so ?ln=zh-cn or ?ln=HI still resolve to the exact Google code
+  // Case-insensitive match so ?ln=zh-cn or ?ln=HI still resolve to the exact Google code.
+  // Returns null for English, for junk, and for an unresolved merge tag.
   function normalize(code) {
     if (!code) return null;
     var lower = String(code).trim().toLowerCase();
@@ -66,50 +74,68 @@
     return null;
   }
 
-  // Resolve the language: URL param wins, sessionStorage carries it across funnel steps
+  // Account default, from the funnel header: window.TFA_CONFIG = { defaultLang: '{{custom_values.default_language_code}}' }
+  // An empty value, a typo, or a merge tag that was never resolved all normalize to null, which means English.
+  var cfg = window.TFA_CONFIG || {};
+  var defaultLang = normalize(cfg.defaultLang);
+
   var raw = null;
   try { raw = new URLSearchParams(window.location.search).get('ln'); } catch (e) {}
 
-  var lang = null;
-  if (raw !== null) {
-    // An explicit param is the visitor's intent: 'en' or an unknown code means English
-    lang = normalize(raw);
-    try {
-      if (lang) sessionStorage.setItem(STORE_KEY, lang);
-      else sessionStorage.removeItem(STORE_KEY);
-    } catch (e) {}
+  var fromUrl = normalize(raw);                                         // a supported language in the URL
+  var urlEnglish = raw !== null && String(raw).trim().toLowerCase() === 'en'; // explicit English in the URL
+
+  var stored = null;
+  try { stored = sessionStorage.getItem(STORE_KEY); } catch (e) {}
+  var storedLang = normalize(stored);
+  var storedEnglish = stored === 'en';
+
+  var lang = null;      // the active non-English language, or null for English
+  var english = false;  // true when English was chosen explicitly (this URL or an earlier step)
+
+  if (fromUrl) {
+    lang = fromUrl;
+  } else if (urlEnglish) {
+    english = true;
+  } else if (storedLang) {
+    lang = storedLang;
+  } else if (storedEnglish) {
+    english = true;
   } else {
-    try { lang = normalize(sessionStorage.getItem(STORE_KEY)); } catch (e) {}
+    // No ln, or an unknown value like ?ln=hrm, and no earlier choice: use the account default
+    lang = defaultLang;
   }
 
-  // Exposed so a form field or a later script can read the active language without re-parsing
-  window.OL_LANG = lang || 'en';
-  log('resolved language:', window.OL_LANG);
+  // Remember only what the visitor chose. The account default is a fallback, not a choice,
+  // so it is not stored; that way changing default_language_code takes effect for new visits.
+  // An explicit English is stored too, so the next step doesn't fall back to the default.
+  try {
+    if (fromUrl) sessionStorage.setItem(STORE_KEY, fromUrl);
+    else if (urlEnglish) sessionStorage.setItem(STORE_KEY, 'en');
+  } catch (e) {}
 
-  // Put ?ln= back in the URL when it came from sessionStorage. This keeps shared links in the
-  // same language, and lets a hidden form field with Query Key "ln" read it on every step.
-  if (raw === null && lang) {
+  // Shared with other scripts and with the language switcher
+  window.OL_LANG = lang || 'en';
+  log('resolved language:', window.OL_LANG, '| default:', defaultLang, '| explicit English:', english);
+
+  // Keep the URL in step with the active language, so the form's hidden field (Query Key "ln")
+  // reads a clean value on every step. This rewrites the URL when:
+  //   - ln is missing but a language is active (earlier choice or account default)
+  //   - English was chosen earlier in this session
+  //   - ln holds junk (?ln=hrm) or the wrong case (?ln=HI); without this the CRM would store the raw text
+  // A visitor on a plain English funnel with no ln keeps an untouched URL.
+  var wanted = lang || (english ? 'en' : null);
+  if (!wanted && raw !== null) wanted = 'en'; // junk with nothing else to fall back to
+  if (wanted && raw !== wanted) {
     try {
       var url = new URL(window.location.href);
-      url.searchParams.set('ln', lang);
+      url.searchParams.set('ln', wanted);
       // Pass the existing history.state through so GHL's router state isn't lost
       history.replaceState(history.state, '', url.pathname + url.search + url.hash);
-      log('restored ?ln=' + lang + ' to URL');
+      log('URL ln set to', wanted);
     } catch (e) {
-      console.warn('[OL Lang] could not restore ln param:', e);
+      console.warn('[OL Lang] could not update ln param:', e);
     }
-  }
-
-  // Unknown ln value (typo, junk, or an unsupported language): rewrite it to ln=en.
-  // The form's hidden field reads this URL parameter, so without this a visitor could
-  // store arbitrary text in the contact's language field. Valid English ('en') is left alone.
-  if (raw !== null && !lang && String(raw).trim().toLowerCase() !== 'en') {
-    try {
-      var cleanUrl = new URL(window.location.href);
-      cleanUrl.searchParams.set('ln', 'en');
-      history.replaceState(history.state, '', cleanUrl.pathname + cleanUrl.search + cleanUrl.hash);
-      log('unknown ln "' + raw + '" rewritten to en');
-    } catch (e) {}
   }
 
   // Cookies: clear every googtrans variant, then set the active one
