@@ -1,28 +1,93 @@
 /*!
- * just-language-translation.js v1.2.0
- * Language only: Google Translate driven by ?ln=, with the language carried across funnel steps.
- * Supports a per-account default language and rewrites legacy per-language links (/fr, /ru).
- * No theme code, no video swap. Hosted remotely so one update ships to every sub-account.
+ * tfa-language-videos.js v1.0.0
+ * The Frequency Awakening LaunchPad funnel: language (?ln=) + video swap by language, with a theme section
+ * that is switched off until the theme classes exist. Hosted remotely so one update ships to every sub-account.
+ *
+ * FILE MAP (each section is independent, so edit one without touching the others):
+ *   1. THEME      switched OFF (THEME_ENABLED = false). Turn on later, once elements have their theme classes.
+ *   2. LANGUAGE   Google Translate driven by ?ln=, account default, language kept across steps, legacy /fr links.
+ *   3. VIDEOS     Bunny Stream video per language per slot, English fallback, reserved height until mounted.
  *
  * LOAD IT IN THE FUNNEL-LEVEL HEAD TRACKING CODE (applies to every step), config line first:
  *   <script>window.TFA_CONFIG = { defaultLang: '{{custom_values.default_language_code}}' };</script>
- *   <script src="https://cdn.jsdelivr.net/gh/Saith-Ahmad/tfa-funnel@COMMIT_OR_TAG/just-language-translation.js" defer></script>
+ *   <script src="https://cdn.jsdelivr.net/gh/Saith-Ahmad/tfa-funnel@COMMIT_OR_TAG/tfa-language-videos.js" defer></script>
  *
  * Language order of precedence:
  *   1. ?ln= in the URL (a supported code, or en for English)
  *   2. the visitor's earlier choice in this session (sessionStorage, including an explicit English)
- *   3. the account default (custom value default_language_code)
+ *   3. the account default (custom value default_language_code; empty means English)
  *   4. English
  *
- * Why defer is safe: this file only sets the googtrans cookie and registers the init callback.
- * Google's element.js is injected after window load, so the cookie always exists before Google reads it.
+ * VIDEO PLACEHOLDER (a Custom Code element on the page, one per video position):
+ *   <div class="ol-video" data-video="home-3"></div>
+ *   Slot keys: home-1, home-2, home-3, affiliate-1, affiliate-2, products-1, products-2, frequency-1
  */
 
-/* =========================================================
-   1. GOOGLE TRANSLATE UI: hidden
-   Injected as a <style> tag from here, so the CSS ships with the script
-   and needs no separate copy in each account
-   ========================================================= */
+
+/* ==========================================================================================================
+   1. THEME   (OFF for now)
+   Sets data-theme on <html> from the owner's custom value, a visitor choice, or a ?style= preview.
+   Nothing happens until THEME_ENABLED is true. Turning it on also needs:
+     - window.TFA_CONFIG = { theme: '{{custom_values.site_theme}}', toggle: '{{custom_values.theme_toggle}}', ... }
+     - the theme CSS and the theme classes on the page elements
+     - the resolver running before first paint, so for the final version move this block inline into the
+       header (a deferred file runs after parsing and the page can flash the default theme first)
+   ========================================================================================================== */
+(function () {
+  var THEME_ENABLED = false;
+  if (!THEME_ENABLED) return;
+  if (window.TFATheme) return; // guard against double loading
+
+  var THEMES = ['default', 'light', 'aurora'];
+  var KEY = 'tfa_theme';
+
+  // Normalizes and whitelists, so a typo or an empty custom value can never produce an unstyled page
+  function valid(t) {
+    t = String(t || '').trim().toLowerCase();
+    return THEMES.indexOf(t) > -1 ? t : null;
+  }
+
+  var cfg = window.TFA_CONFIG || {};
+  var owner = valid(cfg.theme); // empty in a fresh snapshot account, so it falls back to 'default'
+  var allowVisitor = String(cfg.toggle || '').trim().toLowerCase() === 'on';
+
+  // Wrapped in try because Safari private mode and some embeds throw on localStorage
+  var visitor = null;
+  try { visitor = valid(localStorage.getItem(KEY)); } catch (e) {}
+
+  // Preview links win, but are never saved
+  var preview = null;
+  try { preview = valid(new URLSearchParams(location.search).get('style')); } catch (e) {}
+
+  document.documentElement.setAttribute('data-theme', preview || (allowVisitor && visitor) || owner || 'default');
+
+  // Small API used by the nav theme switcher widget
+  window.TFATheme = {
+    themes: THEMES,
+    allowVisitor: allowVisitor,
+    get: function () { return document.documentElement.getAttribute('data-theme'); },
+    set: function (t) {
+      if (!valid(t)) return;
+      document.documentElement.setAttribute('data-theme', valid(t));
+      try { localStorage.setItem(KEY, valid(t)); } catch (e) {}
+    },
+    reset: function () {
+      try { localStorage.removeItem(KEY); } catch (e) {}
+      document.documentElement.setAttribute('data-theme', owner || 'default');
+    }
+  };
+})();
+
+
+/* ==========================================================================================================
+   2. LANGUAGE   (Google Translate driven by ?ln=)
+   2a. Hide Google's own UI
+   2b. Resolve the language, keep the URL in step, drive Google Translate
+   2c. Legacy per-language links (/fr, /ru) become ?ln=
+   ========================================================================================================== */
+
+/* ---- 2a. Google Translate UI: hidden ------------------------------------------------------------------
+   Injected as a <style> tag from here, so the CSS ships with the script and needs no copy in each account */
 (function () {
   if (document.getElementById('tfa-google-hide')) return;
 
@@ -46,9 +111,7 @@
   (document.head || document.documentElement).appendChild(style);
 })();
 
-/* =========================================================
-   2. LANGUAGE (Google Translate driven by ?ln=)
-   ========================================================= */
+/* ---- 2b. Language resolution and Google Translate ----------------------------------------------------- */
 (function () {
   // Run once per page, even if this file is accidentally loaded twice
   if (window.__olLangInit) return;
@@ -58,12 +121,20 @@
   function log() { if (DEBUG) console.log.apply(console, ['[OL Lang]'].concat([].slice.call(arguments))); }
 
   var STORE_KEY = 'ol_lang';
+
+  // Supported languages. To add one: add its code here and its videos in section 3.
   var ALLOWED = [
     'es', 'de', 'fr', 'it', 'pt', 'nl', 'da', 'fi', 'el',
-    'hu', 'bg', 'cs', 'sk', 'ro', 'hi', 'zh-CN', 'ja', 'ko', 'ar', 'pl', 'ru'
+    'hu', 'bg', 'cs', 'sk', 'ro', 'hi', 'zh-CN', 'ja', 'ko', 'ar', 'pl', 'ru',
+    'he', 'no', 'sv', 'tr'
   ];
 
-  // Case-insensitive match so ?ln=zh-cn or ?ln=HI still resolve to the exact Google code.
+  // Hebrew is the one code Google may name differently: older widget builds use 'iw', newer ones accept 'he'.
+  // The URL, the CRM and the video map keep 'he'; only the calls to Google use these aliases, tried in order.
+  var GOOGLE_ALIASES = { he: ['iw', 'he'] };
+  function googleCodes(code) { return GOOGLE_ALIASES[code] || [code]; }
+
+  // Case-insensitive match so ?ln=zh-cn or ?ln=HI still resolve to the exact code.
   // Returns null for English, for junk, and for an unresolved merge tag.
   function normalize(code) {
     if (!code) return null;
@@ -82,7 +153,7 @@
   var raw = null;
   try { raw = new URLSearchParams(window.location.search).get('ln'); } catch (e) {}
 
-  var fromUrl = normalize(raw);                                         // a supported language in the URL
+  var fromUrl = normalize(raw);                                               // a supported language in the URL
   var urlEnglish = raw !== null && String(raw).trim().toLowerCase() === 'en'; // explicit English in the URL
 
   var stored = null;
@@ -114,7 +185,7 @@
     else if (urlEnglish) sessionStorage.setItem(STORE_KEY, 'en');
   } catch (e) {}
 
-  // Shared with other scripts and with the language switcher
+  // Shared with section 3 (videos) and with the language switcher widget
   window.OL_LANG = lang || 'en';
   log('resolved language:', window.OL_LANG, '| default:', defaultLang, '| explicit English:', english);
 
@@ -158,9 +229,10 @@
   // English: stop here, so Google never loads and stale cookies are already gone
   if (!lang) return;
 
-  document.cookie = 'googtrans=/en/' + lang + '; path=/;';
+  var cookieCode = googleCodes(lang)[0];
+  document.cookie = 'googtrans=/en/' + cookieCode + '; path=/;';
   if (rootDomain && rootDomain.indexOf('.') !== -1) {
-    document.cookie = 'googtrans=/en/' + lang + '; path=/; domain=.' + rootDomain + ';';
+    document.cookie = 'googtrans=/en/' + cookieCode + '; path=/; domain=.' + rootDomain + ';';
   }
 
   // Google adds translated-ltr / translated-rtl to <html> once the page is translated
@@ -168,6 +240,12 @@
     var cls = document.documentElement.className || '';
     return cls.indexOf('translated-ltr') !== -1 || cls.indexOf('translated-rtl') !== -1;
   }
+
+  // The language list handed to Google: every supported code plus any Google-side alias
+  var included = [];
+  ALLOWED.forEach(function (c) {
+    googleCodes(c).forEach(function (g) { if (included.indexOf(g) === -1) included.push(g); });
+  });
 
   // Fallback: drive the hidden dropdown until the page is actually translated
   function forceLanguage() {
@@ -181,11 +259,17 @@
         return;
       }
       var combo = document.querySelector('select.goog-te-combo');
-      // Re-dispatch when the value is wrong, or every 5th tick if Google ignored the first change
-      if (combo && (combo.value !== lang || tries % 5 === 0)) {
-        combo.value = lang;
-        combo.dispatchEvent(new Event('change'));
-        log('dropdown set to', lang);
+      if (combo) {
+        // Pick the first Google code this dropdown actually offers (matters for Hebrew: iw or he)
+        var target = googleCodes(lang).filter(function (c) {
+          return Array.prototype.some.call(combo.options, function (o) { return o.value === c; });
+        })[0] || googleCodes(lang)[0];
+        // Re-dispatch when the value is wrong, or every 5th tick if Google ignored the first change
+        if (combo.value !== target || tries % 5 === 0) {
+          combo.value = target;
+          combo.dispatchEvent(new Event('change'));
+          log('dropdown set to', target);
+        }
       }
       if (tries >= maxTries) {
         clearInterval(timer);
@@ -199,7 +283,7 @@
     try {
       new google.translate.TranslateElement({
         pageLanguage: 'en',
-        includedLanguages: ALLOWED.join(','), // keeps the hidden dropdown to the whitelist
+        includedLanguages: included.join(','), // keeps the hidden dropdown to the whitelist
         autoDisplay: false
       }, 'google_translate_element');
       log('widget initialised');
@@ -245,13 +329,11 @@
   }
 })();
 
-/* =========================================================
-   3. LEGACY LANGUAGE LINKS: /fr, /ru ... -> current page + ?ln=
+/* ---- 2c. Legacy language links: /fr, /ru ... -> current page + ?ln= ---------------------------------
    The old setup had one funnel per language, so existing switchers link to /fr, /ru, etc.
    With one funnel those paths no longer exist. This turns such a click into
-   "same page, same params, only ln replaced". It sits outside the language block on purpose,
-   because that block returns early for English visitors and the links must work for them too.
-   ========================================================= */
+   "same page, same params, only ln replaced". It sits outside block 2b on purpose,
+   because 2b returns early for English visitors and the links must work for them too. */
 (function () {
   if (window.__olLegacyLinks) return;
   window.__olLegacyLinks = true;
@@ -283,4 +365,302 @@
     next.hash = ''; // a hash-only difference would not reload the page
     window.location.assign(next.pathname + next.search);
   }, true);
+})();
+
+
+/* ==========================================================================================================
+   3. VIDEOS   (Bunny Stream, swapped per language)
+   Reads window.OL_LANG from section 2. Default is English: any language without a video for a slot,
+   and any visitor with no language, gets the English video.
+   To add or fix a video: edit the one line in VIDEOS (and LIBRARY if a new language is added).
+   ========================================================================================================== */
+(function () {
+  if (window.__tfaVideosInit) return; // guard against double loading
+  window.__tfaVideosInit = true;
+
+  var DEBUG = false; // set to true only while testing; logs each mounted video
+
+  // Each language's Bunny Stream library. A value below without a slash is a video ID in that library.
+  // A value WITH a slash is a full "libraryId/videoId" path and is used as is (for the few exceptions).
+  var LIBRARY = {
+    en: '700474',
+    bg: '714851',
+    cs: '714859',
+    da: '713380',
+    nl: '713039',
+    fr: '700125',
+    de: '701919',
+    el: '700078',
+    he: '702882',
+    hi: '714878',
+    hu: '707689',
+    it: '699719',
+    no: '713059',
+    pl: '714834',
+    pt: '699657',
+    ro: '714886',
+    ru: '710252',
+    es: '699702',
+    sv: '713321',
+    tr: '713447'
+  };
+
+  // slot -> language -> video. English is the fallback for any language that has no entry for a slot.
+  var VIDEOS = {
+    // carried over from the existing map (not in the new docs); only these languages have it, the rest fall back to English
+    'home-1': {
+      en: '689036/ad8151ce-a709-4fcd-8196-1be893203888',
+      nl: 'f8f892b3-7f2f-4ea6-9b4d-7f06f0355612',
+      fr: '680fec28-37ff-401f-971e-00fe15359fae',
+      el: 'f2de3578-5421-4cc7-a2a6-6ea8cc80927d',
+      hi: 'd3f42a22-4b80-4f12-89c6-5f9de4141491',
+      es: '9cd5b4ad-1973-4f09-abc6-1405a51bf2dc'
+    },
+    // carried over from the existing map (not in the new docs); only these languages have it, the rest fall back to English
+    'home-2': {
+      en: 'd7148501-2ff2-4101-8333-3c00a663fd68',
+      nl: '5978ff9a-7aac-448c-a40c-f2e921ca4178',
+      fr: 'd442a62d-4fef-4e59-bcef-957d544315af',
+      el: 'c114870c-63ee-4f76-bec9-22db0175dbd7',
+      hi: '92fa88f8-f604-4c64-a743-b008363614f9',
+      es: 'bd9cdf76-86bc-4a78-af01-2afc851b899a'
+    },
+    // NEW: The Future of Wellness Starts Here
+    'home-3': {
+      en: 'a72d08fe-b656-4541-b106-3c8c7950639f',
+      bg: '83e86fbb-2f94-4032-8554-c3a84218ce94',
+      cs: '764765ea-58da-46f4-9013-aadb17b02219',
+      da: 'fdea914e-622d-4587-8b09-b2a103f5103b',
+      nl: '97468708-d742-4a17-ab1b-77cbff406fa1',
+      fr: '8d99f31c-af95-4aac-b267-dbfa5924508c',
+      de: 'c26e6ac6-a82d-4428-a3e9-4480c08a5f72',
+      el: '3b342602-237d-4af0-8bd3-e9efa2fa98dc',
+      he: 'aa894078-6a93-49fd-b56a-066cb18f1d0d',
+      hi: 'f9181ea7-cde7-44a0-b4c2-e54398f4273d',
+      hu: '2962bb67-a806-4880-9b8c-29c96d0c476a',
+      it: 'e65375b2-2da5-49ac-83d4-1b40c350542b',
+      no: 'd268c3c6-2484-4b0b-90ea-ea390b850dc3',
+      pl: 'f9617a69-f209-4c20-a705-a72f283fb460',
+      pt: 'da3ea862-d539-4e45-ad1e-15e438f7524c',
+      ro: '96f90756-34e5-4a9e-b5b2-06ed9291a8c2',
+      ru: '3eeaea9d-6dcd-4a22-91e0-68645e3b4a2b',
+      es: 'b023edd1-0c53-467e-b2dc-7ad59438b8d1',
+      sv: 'aa9dffca-2888-4d0f-9354-e4b14cb0cc60',
+      tr: 'e8761b4b-dd3b-4664-8e6e-65dafeaf5595'
+    },
+    // NEW: Discover how you can earn (remove all old affiliate videos)
+    'affiliate-1': {
+      en: 'ee9e0c52-a879-49b6-a4fe-3b17402f6cc9',
+      bg: '97d6932d-74a2-416e-936a-57a0be2ff55a',
+      cs: '5fdd0d5c-1422-4158-a0c3-ff531ddfbd45',
+      da: '2b45b669-83ee-4be0-8ad9-3e1c0d368fee',
+      nl: '0a0ca71f-6dfd-4b63-8b94-9b64dc0c5192',
+      fr: '9cc6697f-2577-42f8-8982-0a48c4c495be',
+      de: '2ec0656d-43d4-4972-b461-761ba7419223',
+      el: 'e98a4a3b-8915-4932-a555-1fc8f56d8b88',
+      he: 'e5b166dc-c691-4a92-9797-c5f686dc0876',
+      hi: '2271f2f8-e4b2-4d23-acf3-82085d12d83f',
+      hu: '66c2c7ac-fa2a-4b64-ae1f-3366fd26bade',
+      it: '8064e2c1-0acd-4a1b-8074-9a0c4ad13e4b',
+      no: 'ca2e9410-b191-4feb-acbe-d6c9e169e871',
+      pl: 'a2cd1ad1-80b9-4d21-9860-4d607ea70640',
+      pt: 'd26168fb-ce03-44eb-9214-072f62aff940',
+      ro: '53a4d90b-5537-4984-a007-ec11e70415af',
+      ru: '3e66b293-3027-49e3-8ec6-d6c79a6892f1',
+      es: '6c4fa151-625f-4122-9662-48eb8beea9ec',
+      sv: '1a17691b-ce98-4fbb-9c9f-68f956e7bc19',
+      tr: '3bf75d28-cc6f-43d5-8b96-805132da1e62'
+    },
+    // NEW: The Power of 2
+    'affiliate-2': {
+      en: '8cb808fc-0989-4d45-adbc-4a564da69528',
+      bg: 'b7201ac5-c625-4ed5-bd04-5df02454c601',
+      cs: '3f1818ec-5866-4795-875b-5b1a31dac67b',
+      da: '05d5835a-27e8-44bb-a7be-35e21e2fdf5d',
+      nl: '0018179e-f6ef-4b68-8b3e-7a71f3e43a90',
+      fr: 'f38a8d2c-7755-4c14-89ca-8b2aa47b31c5',
+      de: 'a73240f8-3986-4f6b-ae43-8f188acf722d',
+      el: 'e4f08163-c14e-4528-b24f-34d265093060',
+      he: 'a252ed13-aab2-4ad7-b42f-50a958ced84d',
+      hi: '38acf112-3118-42c3-8e94-94918eeba49a',
+      hu: '470d1abe-96e2-4929-a40e-d962580e65f2',
+      it: '48b379fc-1cbe-41be-a5ab-3c0a01a9a9ec',
+      no: 'b5f46a0c-1aa9-46b0-868b-31b4a9e6ef33',
+      pl: 'd8edbdf0-3f33-40a7-b477-a570cb6c083d',
+      pt: '355ebf96-89a0-427c-94f9-b4095a6fe107',
+      ro: '7ea3a2bf-7c17-438c-9a91-b94f623d446b',
+      ru: '855dfe13-3177-4b5e-a656-5d542354873f',
+      es: '8044ae02-e673-4914-9bfb-cc72770027b7',
+      sv: 'bddfd8bd-6e6d-412f-89d4-bada6fe703cb',
+      tr: '821150e2-b050-448f-9c0e-113ffaf07c14'
+    },
+    // NEW: Next-Generation Wellness Devices (hero of /products)
+    'products-1': {
+      en: '0fb74168-38bf-452e-a2a9-7107412cfb01',
+      bg: '2d0b0737-c1f9-48be-bf67-4aaca8666863',
+      cs: '36ac0cc9-cca0-4233-8b47-27c34d46ca5d',
+      da: '4611b410-0059-4eed-9597-3123afad768d',
+      nl: '99618b00-5ed4-497a-bd37-667b14d047d2',
+      fr: '02bd9da7-46d7-4135-9405-af7ea47a3145',
+      de: '4b43a95d-9723-4d89-9141-2d6f18376e20',
+      el: '9c042cc3-3884-4d26-997c-9efa3990672a',
+      he: '42db8379-af65-4ee4-92ce-79c505c585c4',
+      hi: '2fa653c9-53d8-4873-967f-d931fd7f389c',
+      hu: '140c0dc2-69f3-41f7-8e0a-52f32589d74b',
+      it: '168b633b-e513-469b-841f-e24686275bcd',
+      no: '5ecb78f4-5f77-46c5-a051-b82c5b21751c',
+      pl: '204abe17-7971-452d-8268-4ebb0f6357e7',
+      pt: '6d218419-46ea-467b-bb7a-5815dcd2fd28',
+      ro: '41a2b51e-ab50-4959-8663-986020c6ff3b',
+      ru: '18154426-38fa-4b01-ae4a-e1003784a8ae',
+      es: '1e673ffd-9540-49aa-b651-763d45ba24c5',
+      sv: 'e785482c-d325-43f7-9326-f7ad8242357d',
+      tr: 'bfa35e25-48b7-4275-8b8e-2705cf5462fb'
+    },
+    // NEW: Safety, Technology & Trust (above Why It Works)
+    'products-2': {
+      en: '689036/fa365bf8-b071-480f-8329-568d42cc02b4',
+      bg: 'ba4df776-d383-44bd-bef2-367fe465d0c6',
+      cs: 'f6a3a4e1-1403-487a-be5d-1485f304bc93',
+      da: 'b5586615-5bd3-4307-8c7f-202a7b947c57',
+      nl: 'c67cba4d-6c32-4fb6-8fb5-48f44d5699ba',
+      fr: 'ea71a094-d80f-4112-9f79-5d86a68a206a',
+      de: 'd03b5479-f10f-4a85-89de-6a795bd7e1e0',
+      el: '0f7a46ac-b00d-4db0-aa6e-1e9dda7b9d31',
+      he: '73079e31-0adc-4b06-b993-4f4598fbe4dc',
+      hi: '7aa81a61-21ec-44b6-a230-10c64d491bbc',
+      hu: '85b3b7eb-dbea-46d2-85d0-f8445dc46803',
+      it: '0a7366ee-ce7e-4fce-9c15-95061bfc7d79',
+      no: '6f2a1bd2-31c0-4975-b1be-51ed6d2a4714',
+      pl: '2dda66a1-4144-4e07-96ad-7a73c97e771a',
+      pt: 'fbcefa7c-f544-4101-8f76-bc2c29af9e06',
+      ro: 'fc74629c-19dc-4ebc-8d9c-8a71965026f5',
+      ru: '3b799fd8-bfba-4396-a7e1-51d50ef3a32f',
+      es: '8dc43fa9-20ea-4cb1-bee1-e905fe5b9035',
+      sv: '06da0ad6-3c43-47d6-a08d-1a080b66d15f',
+      tr: '95fc0617-9c79-4607-95ae-b557f44beec6'
+    },
+    // NEW: Frequency video (top of What is the Frequency Awakening)
+    'frequency-1': {
+      en: '8b51efc6-397d-47fd-a072-8d384529b7ba',
+      bg: 'd6e1cc68-a472-4f6f-a185-b2a8d885c711',
+      cs: '0ef214fd-e3d9-4227-988a-31091a53f5f4',
+      da: '67de8cc3-32a1-42fc-8510-302fe7e26a67',
+      nl: 'ea34cc0b-84ee-4672-b79f-21fa0d959378',
+      fr: '174ac569-3e1e-41e5-af88-5362bd8710c8',
+      de: 'e16db4e5-8445-4b6f-bc77-2feba8c7c9b0',
+      el: 'ce289560-6072-498e-9a37-cad09f332069',
+      he: '93c5a71f-b0ed-47c1-b314-0666d4bbec8c',
+      hi: '31e112b8-5cee-47ab-8e31-c255e8d0aa1e',
+      hu: '04bd2b12-3240-4bf0-b5fe-4b4dc71df90d',
+      it: 'dea98c82-8717-49a4-a4e6-93d2a21a9865',
+      pl: 'a2ee84ec-13ea-4c66-b777-0b528ef0c659',
+      pt: 'c31fa62b-9760-4db2-aeaf-33f67c349b28',
+      ro: 'a1a6ae17-60c3-4343-82d6-d596d6adf454',
+      ru: '6e256980-f0f2-451e-b37f-66d71fdf2060',
+      es: 'b9bcfc44-dfd6-4814-b437-1fbe27cec66f',
+      sv: '3862bcab-2515-415b-a3c7-a669c506d893',
+      tr: 'e8df7e32-66a6-429c-9ec2-6543543dcfb1'
+    }
+  };
+
+  // Shared embed settings, written once instead of in every embed code
+  var BASE = 'https://player.mediadelivery.net/embed/';
+  var QUERY = '?autoplay=false&loop=false&muted=false&preload=false&responsive=true';
+
+  // Reserve the video's space before it loads, so the page doesn't jump and the block never looks empty.
+  // 16:9 box with a minimum height; once the player is mounted the box drops these and the player sizes it.
+  // A slot with no video at all is hidden instead of leaving an empty grey box.
+  function injectStyle() {
+    if (document.getElementById('tfa-video-css')) return;
+    var css = [
+      '.ol-video { display: block; position: relative; width: 100%; aspect-ratio: 16 / 9; min-height: 180px;',
+      '  background: rgba(127, 127, 127, 0.12); border-radius: 12px; overflow: hidden; }',
+      '.ol-video[data-ready] { aspect-ratio: auto; min-height: 0; background: none; }',
+      '.ol-video[data-empty] { display: none; }'
+    ].join('\n');
+    var style = document.createElement('style');
+    style.id = 'tfa-video-css';
+    style.textContent = css;
+    (document.head || document.documentElement).appendChild(style);
+  }
+
+  // Set by section 2 (an unknown or missing ln means English)
+  function currentLang() {
+    return window.OL_LANG || 'en';
+  }
+
+  // Returns "libraryId/videoId" for a slot in the given language, else the English one, else null
+  function resolve(slot, lang) {
+    var entry = VIDEOS[slot];
+    if (!entry) return null;
+    var use = entry[lang] ? lang : 'en';
+    var value = entry[use];
+    if (!value) return null;
+    return value.indexOf('/') === -1 ? LIBRARY[use] + '/' + value : value;
+  }
+
+  function mount(box) {
+    var slot = box.getAttribute('data-video') || '';
+    // Mark first, so a bad key is not retried on every poll
+    box.setAttribute('data-ready', '1');
+
+    var path = resolve(slot, currentLang());
+    if (!path) {
+      console.warn('[TFA Video] no video for slot:', slot);
+      box.setAttribute('data-empty', '1'); // hide the reserved box rather than show an empty one
+      return;
+    }
+
+    // Responsive 16:9 wrapper; notranslate keeps Google from touching the player area
+    var wrap = document.createElement('div');
+    wrap.className = 'notranslate';
+    wrap.setAttribute('translate', 'no');
+    wrap.style.cssText = 'position:relative;padding-top:56.25%;width:100%;height:0;overflow:hidden;';
+
+    var frame = document.createElement('iframe');
+    frame.loading = 'lazy';
+    frame.style.cssText = 'border:0;position:absolute;top:0;left:0;width:100%;height:100%;';
+    frame.allow = 'accelerometer;gyroscope;autoplay;encrypted-media;picture-in-picture;fullscreen;';
+    frame.allowFullscreen = true;
+    // Bunny checks the referrer when domain protection is on
+    frame.setAttribute('referrerpolicy', 'strict-origin-when-cross-origin');
+
+    // Attach first, then set src, so the iframe loads once inside the page
+    wrap.appendChild(frame);
+    box.innerHTML = '';
+    box.appendChild(wrap);
+    frame.src = BASE + path + QUERY;
+
+    if (DEBUG) console.log('[TFA Video]', slot, '(' + currentLang() + ') ->', frame.src);
+  }
+
+  // Mounts any placeholder not yet handled; cheap enough to repeat
+  function scan() {
+    var boxes = document.querySelectorAll('.ol-video:not([data-ready])');
+    for (var i = 0; i < boxes.length; i++) mount(boxes[i]);
+  }
+
+  // GHL renders sections after load, so poll for 10 s instead of a MutationObserver
+  function init() {
+    injectStyle();
+    scan();
+    var ticks = 0;
+    var timer = setInterval(function () {
+      scan();
+      if (++ticks >= 50) clearInterval(timer); // 50 x 200 ms = 10 s
+    }, 200);
+  }
+
+  // Exposed for checking in the console: TFAVideos.resolve('home-3', 'es')
+  window.TFAVideos = { resolve: resolve, slots: Object.keys(VIDEOS) };
+
+  // The style goes in right away, so placeholders already in the page hold their space from the first paint
+  injectStyle();
+
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', init);
+  } else {
+    init();
+  }
 })();
