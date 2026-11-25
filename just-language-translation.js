@@ -1,11 +1,13 @@
 /*!
- * tfa-language-videos.js v1.0.0
+ * tfa-language-videos.js v1.3.0
  * The Frequency Awakening LaunchPad funnel: language (?ln=) + video swap by language, with a theme section
  * that is switched off until the theme classes exist. Hosted remotely so one update ships to every sub-account.
  *
  * FILE MAP (each section is independent, so edit one without touching the others):
- *   1. THEME      switched OFF (THEME_ENABLED = false). Turn on later, once elements have their theme classes.
- *   2. LANGUAGE   Google Translate driven by ?ln=, account default, language kept across steps, legacy /fr links.
+ *   1. THEME      notes only. The theme resolver is a small INLINE script in the funnel head code (it must run
+ *                 before the page paints, which a deferred file cannot do). See the snippet in section 1.
+ *   2. LANGUAGE   Google Translate driven by ?ln=, account default, language kept across steps, legacy /fr links,
+ *                 and a list of elements Google must never translate (initials, brand marks).
  *   3. VIDEOS     Bunny Stream video per language per slot, English fallback, reserved height until mounted.
  *
  * LOAD IT IN THE FUNNEL-LEVEL HEAD TRACKING CODE (applies to every step), config line first:
@@ -25,58 +27,14 @@
 
 
 /* ==========================================================================================================
-   1. THEME   (OFF for now)
-   Sets data-theme on <html> from the owner's custom value, a visitor choice, or a ?style= preview.
-   Nothing happens until THEME_ENABLED is true. Turning it on also needs:
-     - window.TFA_CONFIG = { theme: '{{custom_values.site_theme}}', toggle: '{{custom_values.theme_toggle}}', ... }
-     - the theme CSS and the theme classes on the page elements
-     - the resolver running before first paint, so for the final version move this block inline into the
-       header (a deferred file runs after parsing and the page can flash the default theme first)
+   1. THEME   (notes only: nothing in this file sets the theme)
+   The theme is chosen by <html data-theme="light|aurora">; no attribute means dark. The page CSS reads it.
+   It is set by a small INLINE script in the funnel-level head code, placed BEFORE this file's script tag,
+   because it has to run before the first paint (this file is deferred, so a theme set from here would flash).
+   Precedence there: ?style= preview, then the visitor's saved choice (localStorage "tfa-theme", written by the footer
+   toggle widget), then the account default (custom value, via TFA_CONFIG.theme), then dark.
+   Values accepted: light, dark, aurora (azure is accepted as an alias). Anything else counts as dark.
    ========================================================================================================== */
-(function () {
-  var THEME_ENABLED = false;
-  if (!THEME_ENABLED) return;
-  if (window.TFATheme) return; // guard against double loading
-
-  var THEMES = ['default', 'light', 'aurora'];
-  var KEY = 'tfa_theme';
-
-  // Normalizes and whitelists, so a typo or an empty custom value can never produce an unstyled page
-  function valid(t) {
-    t = String(t || '').trim().toLowerCase();
-    return THEMES.indexOf(t) > -1 ? t : null;
-  }
-
-  var cfg = window.TFA_CONFIG || {};
-  var owner = valid(cfg.theme); // empty in a fresh snapshot account, so it falls back to 'default'
-  var allowVisitor = String(cfg.toggle || '').trim().toLowerCase() === 'on';
-
-  // Wrapped in try because Safari private mode and some embeds throw on localStorage
-  var visitor = null;
-  try { visitor = valid(localStorage.getItem(KEY)); } catch (e) {}
-
-  // Preview links win, but are never saved
-  var preview = null;
-  try { preview = valid(new URLSearchParams(location.search).get('style')); } catch (e) {}
-
-  document.documentElement.setAttribute('data-theme', preview || (allowVisitor && visitor) || owner || 'default');
-
-  // Small API used by the nav theme switcher widget
-  window.TFATheme = {
-    themes: THEMES,
-    allowVisitor: allowVisitor,
-    get: function () { return document.documentElement.getAttribute('data-theme'); },
-    set: function (t) {
-      if (!valid(t)) return;
-      document.documentElement.setAttribute('data-theme', valid(t));
-      try { localStorage.setItem(KEY, valid(t)); } catch (e) {}
-    },
-    reset: function () {
-      try { localStorage.removeItem(KEY); } catch (e) {}
-      document.documentElement.setAttribute('data-theme', owner || 'default');
-    }
-  };
-})();
 
 
 /* ==========================================================================================================
@@ -368,6 +326,41 @@
 })();
 
 
+/* ---- 2d. Never translate: initials and brand marks ------------------------------------------------------
+   Google translates short acronyms as if they were words (the "TQ" avatar becomes "Total Transaction Quality" in Greek
+   and breaks the card layout). Everything matching a selector below gets class "notranslate" + translate="no",
+   which Google respects. To protect another element, add its selector to NO_TRANSLATE.
+   It runs on every phase and then polls, because the page builder can render elements after this file loads.
+   The class has to be there BEFORE Google translates the element, so it also runs ahead of the Google boot in 2b. */
+(function () {
+  if (window.__tfaNoTranslate) return;
+  window.__tfaNoTranslate = true;
+
+  var NO_TRANSLATE = [
+    '.tfa-av'            // Tommy Quinn card: the "TQ" initials circle
+    // , '.tfa-name'     // uncomment to keep the person's name untranslated as well
+  ];
+
+  function mark() {
+    for (var i = 0; i < NO_TRANSLATE.length; i++) {
+      var nodes = document.querySelectorAll(NO_TRANSLATE[i]);
+      for (var j = 0; j < nodes.length; j++) {
+        if (!nodes[j].classList.contains('notranslate')) {
+          nodes[j].classList.add('notranslate');
+          nodes[j].setAttribute('translate', 'no');
+        }
+      }
+    }
+  }
+
+  mark();
+  document.addEventListener('DOMContentLoaded', mark);
+  window.addEventListener('load', mark);
+  var ticks = 0;
+  var timer = setInterval(function () { mark(); if (++ticks >= 100) clearInterval(timer); }, 100); // 10 s
+})();
+
+
 /* ==========================================================================================================
    3. VIDEOS   (Bunny Stream, swapped per language)
    Reads window.OL_LANG from section 2. Default is English: any language without a video for a slot,
@@ -407,23 +400,51 @@
 
   // slot -> language -> video. English is the fallback for any language that has no entry for a slot.
   var VIDEOS = {
-    // carried over from the existing map (not in the new docs); only these languages have it, the rest fall back to English
+    // Home video 1: all 20 languages. English is this design's own video; the others come from the reference site.
     'home-1': {
       en: '689036/ad8151ce-a709-4fcd-8196-1be893203888',
+      bg: '4c2b255b-c87a-4f69-bfb5-4a879e540568',
+      cs: '69b08a67-14bf-402c-ae70-083fede042af',
+      da: '9d54cc00-c058-407b-8e2f-4ba3970c56b1',
       nl: 'f8f892b3-7f2f-4ea6-9b4d-7f06f0355612',
       fr: '680fec28-37ff-401f-971e-00fe15359fae',
+      de: '1bd67f05-9383-4ae2-ab94-5392c17f7e40',
       el: 'f2de3578-5421-4cc7-a2a6-6ea8cc80927d',
+      he: '069146a0-9ac4-463c-b1d6-dc0d10d23b1c',
       hi: 'd3f42a22-4b80-4f12-89c6-5f9de4141491',
-      es: '9cd5b4ad-1973-4f09-abc6-1405a51bf2dc'
+      hu: '714845/58ee5988-1df6-47f3-bcd6-50a11c618ccf',
+      it: 'e3541dbe-4d06-47bd-aecb-bc9b051084d8',
+      no: 'c3a1000f-a15c-43e6-9128-6e50da320d5a',
+      pl: '1db779b8-33cc-4a2d-9c55-1d3af70d3f64',
+      pt: '2d64e68e-a0a7-4fba-8740-218b19e86a46',
+      ro: '5adc5ff9-aed6-4893-8128-a9e839ec8516',
+      ru: 'eb6d68dd-b406-4ded-a185-5226706482fa',
+      es: '9cd5b4ad-1973-4f09-abc6-1405a51bf2dc',
+      sv: '754c5c9b-ce9e-40ea-962f-2c7a94d772d1',
+      tr: '5afd23da-ca40-4914-bd9f-163f7f4678e6'
     },
-    // carried over from the existing map (not in the new docs); only these languages have it, the rest fall back to English
+    // Home video 2: all 20 languages. English is this design's own video; the others come from the reference site.
     'home-2': {
       en: 'd7148501-2ff2-4101-8333-3c00a663fd68',
+      bg: 'eb754889-4187-4d83-a2fc-3bb7b4449c7c',
+      cs: 'd7df5b57-8f1f-4c5a-8ece-fc51dddcd545',
+      da: 'e93c7bed-b5b5-4fc2-8250-56f4bb2ee275',
       nl: '5978ff9a-7aac-448c-a40c-f2e921ca4178',
       fr: 'd442a62d-4fef-4e59-bcef-957d544315af',
+      de: 'd146ed0f-a839-45ba-b6ac-c0c74dfd7283',
       el: 'c114870c-63ee-4f76-bec9-22db0175dbd7',
+      he: '7a6c19e6-5d26-4297-87e3-947572d7d36d',
       hi: '92fa88f8-f604-4c64-a743-b008363614f9',
-      es: 'bd9cdf76-86bc-4a78-af01-2afc851b899a'
+      hu: '06bab377-93e4-432c-a997-8dee660598df',
+      it: 'b12311d4-6648-433c-b9a4-7d80b96bfa90',
+      no: 'ea31dc62-6c28-41e6-a5fc-552ae5393b2b',
+      pl: 'cde85ea5-6de6-4b7d-9672-756effdc6273',
+      pt: 'e05fbf12-a07f-4020-bfa3-397d6250d072',
+      ro: '8f3f16ed-7208-4e0a-bc0a-68f079e00d0f',
+      ru: '7817e752-d904-482e-91a0-8d582c230d28',
+      es: 'bd9cdf76-86bc-4a78-af01-2afc851b899a',
+      sv: 'f646eb94-5816-405c-b705-8c6430c8fc02',
+      tr: 'b832ccc1-60ac-49c0-8d91-b2484aa0ed13'
     },
     // NEW: The Future of Wellness Starts Here
     'home-3': {
