@@ -1,5 +1,4 @@
 /*!
- * tfa-language-videos.js v1.3.0
  * The Frequency Awakening LaunchPad funnel: language (?ln=) + video swap by language, with a theme section
  * that is switched off until the theme classes exist. Hosted remotely so one update ships to every sub-account.
  *
